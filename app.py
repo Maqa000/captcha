@@ -18,23 +18,31 @@ def preprocess_image(image_bytes):
     try:
         img = Image.open(io.BytesIO(image_bytes))
         
+        # Сохраняем оригинал для отладки
+        debug_original = io.BytesIO()
+        img.save(debug_original, format='PNG')
+        print(f"Оригинал размер: {len(debug_original.getvalue())} байт")
+        
+        # Увеличиваем размер для лучшего распознавания
+        width, height = img.size
+        img = img.resize((width * 2, height * 2), Image.Resampling.LANCZOS)
+        
         # Увеличиваем контраст
         enhancer = ImageEnhance.Contrast(img)
-        img = enhancer.enhance(2.0)
+        img = enhancer.enhance(3.0)
         
         # Увеличиваем резкость
         enhancer = ImageEnhance.Sharpness(img)
-        img = enhancer.enhance(2.0)
-        
-        # Увеличиваем яркость
-        enhancer = ImageEnhance.Brightness(img)
-        img = enhancer.enhance(1.2)
+        img = enhancer.enhance(3.0)
         
         # Конвертируем в черно-белое
         img = img.convert('L')
         
+        # Сохраняем обработанное для отладки
         output = io.BytesIO()
         img.save(output, format='PNG')
+        print(f"Обработано размер: {len(output.getvalue())} байт")
+        
         return output.getvalue()
     except Exception as e:
         print(f"Ошибка обработки: {e}")
@@ -49,6 +57,9 @@ def analyze_screenshot():
             
         action_needed = request.form.get('action_needed', 'check_rods')
         image_bytes = image_file.read()
+        
+        print(f"Получен запрос: {action_needed}")
+        print(f"Размер изображения: {len(image_bytes)} байт")
         
         if not DEEPSEEK_API_KEY:
             print("ОШИБКА: Не задан DEEPSEEK_API_KEY")
@@ -69,18 +80,13 @@ def analyze_screenshot():
             processed_bytes = preprocess_image(image_bytes)
             image_base64 = base64.b64encode(processed_bytes).decode('utf-8')
             
-            # Новый промпт специально для поиска цифр после "Captcha:"
-            prompt = """Ты видишь изображение с текстом. Найди строку "Captcha:" и после нее идут цифры.
+            # Упрощенный промпт
+            prompt = """На этом изображении текст "Captcha:" и после него цифры.
+            Напиши ТОЛЬКО эти цифры, ничего больше.
             
-            ОЧЕНЬ ВАЖНО:
-            1. Найди текст "Captcha:" на изображении
-            2. После него должны быть цифры (например: 1702)
-            3. Напиши ТОЛЬКО эти цифры, ничего больше
-            4. Если цифр нет - напиши пустую строку
+            Например, если видишь "Captcha: 1702", ответь "1702"
             
-            Пример: если видишь "Captcha: 1702", ответь "1702"
-            
-            Твой ответ должен содержать ТОЛЬКО цифры."""
+            Цифры: """
             
             payload = {
                 "model": "deepseek-chat",
@@ -102,7 +108,7 @@ def analyze_screenshot():
                     }
                 ],
                 "temperature": 0.0,
-                "max_tokens": 20
+                "max_tokens": 10
             }
             
             try:
@@ -111,18 +117,20 @@ def analyze_screenshot():
                     "Content-Type": "application/json"
                 }
                 
-                print("Отправляю запрос к DeepSeek для поиска цифр после Captcha:")
+                print("Отправляю запрос к DeepSeek...")
                 response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=30)
+                
+                print(f"Статус ответа DeepSeek: {response.status_code}")
                 
                 if response.status_code == 200:
                     result = response.json()
-                    print(f"Ответ DeepSeek: {result}")
+                    print(f"Полный ответ DeepSeek: {json.dumps(result, indent=2)}")
                     
                     if 'choices' in result and len(result['choices']) > 0:
                         ai_response = result['choices'][0]['message']['content'].strip()
-                        print(f"Текст ответа: '{ai_response}'")
+                        print(f"Текст ответа DeepSeek: '{ai_response}'")
                         
-                        # Извлекаем ТОЛЬКО цифры
+                        # Извлекаем цифры
                         digits = re.sub(r'[^0-9]', '', ai_response)
                         print(f"Извлеченные цифры: '{digits}'")
                         
@@ -132,17 +140,28 @@ def analyze_screenshot():
                                 "text": digits
                             })
                         else:
-                            print("Цифры не найдены")
+                            print("Цифры не найдены в ответе")
+                            # Пробуем найти цифры в любом месте ответа
+                            all_digits = re.findall(r'\d+', ai_response)
+                            if all_digits:
+                                digits = ''.join(all_digits)
+                                print(f"Найдены цифры через findall: '{digits}'")
+                                return jsonify({
+                                    "success": True,
+                                    "text": digits
+                                })
+                            
                             return jsonify({"success": False, "text": ""})
                     else:
-                        print("Нет поля choices")
+                        print("Нет поля choices в ответе")
                         return jsonify({"success": False, "text": ""})
                 else:
                     print(f"Ошибка DeepSeek: {response.status_code}")
+                    print(f"Текст ошибки: {response.text}")
                     return jsonify({"success": False, "text": ""})
                     
             except Exception as e:
-                print(f"Ошибка запроса: {e}")
+                print(f"Ошибка при запросе к DeepSeek: {e}")
                 return jsonify({"success": False, "text": ""})
                 
         else:
@@ -164,8 +183,7 @@ def analyze_screenshot():
         {"slot": 1, "status": "готово/ожидание/catch/ловля"},
         {"slot": 2, "status": "..."},
         {"slot": 3, "status": "..."}
-    ],
-    "captcha": {"detected": false}
+    ]
 }"""
             
             payload = {
@@ -236,8 +254,7 @@ def analyze_screenshot():
                         {"slot": 1, "status": "ожидание"},
                         {"slot": 2, "status": "ожидание"},
                         {"slot": 3, "status": "ожидание"}
-                    ],
-                    "captcha": {"detected": False}
+                    ]
                 })
                     
             except Exception as e:
@@ -247,8 +264,7 @@ def analyze_screenshot():
                         {"slot": 1, "status": "ожидание"},
                         {"slot": 2, "status": "ожидание"},
                         {"slot": 3, "status": "ожидание"}
-                    ],
-                    "captcha": {"detected": False}
+                    ]
                 })
         
     except Exception as e:
@@ -261,8 +277,7 @@ def analyze_screenshot():
                     {"slot": 1, "status": "ожидание"},
                     {"slot": 2, "status": "ожидание"},
                     {"slot": 3, "status": "ожидание"}
-                ],
-                "captcha": {"detected": False}
+                ]
             })
 
 @app.route('/')

@@ -24,43 +24,6 @@ def analyze_screenshot():
         image_bytes = image_file.read()
         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
         
-        # Разные промпты в зависимости от того, что ищем
-        if action_needed == "check_rods":
-            prompt = """Ты помощник для игры в рыбалку. На скриншоте видно 3 удочки (слота).
-Найди каждую удочку и определи, что написано над ней.
-
-Варианты надписей:
-- "Готово" (готова к старту)
-- "Ожидание" (ждет поклевку)
-- "CATCH REQUIRED" (клюет, нужно ловить)
-- "Ловля..." (процесс ловли)
-
-Также определи:
-- Есть ли на экране окно с капчей? (обычно белое окно с надписью "Are you bot? CAPTCHA")
-- Если есть капча - напиши текст капчи (только цифры)
-
-Ответь строго в формате JSON:
-{
-    "rods": [
-        {"slot": 1, "status": "готово/ожидание/catch/ловля"},
-        {"slot": 2, "status": "..."},
-        {"slot": 3, "status": "..."}
-    ],
-    "captcha": {
-        "detected": true/false,
-        "text": "цифры_с_капчи_если_есть"
-    }
-}"""
-        else:
-            prompt = """Проанализируй скриншот игры в рыбалку.
-Определи:
-1. Есть ли капча? Если да - напиши цифры с капчи
-
-Ответь строго в формате JSON:
-{
-    "captcha": {"detected": true/false, "text": "цифры"}
-}"""
-        
         # Проверяем, есть ли API ключ
         if not DEEPSEEK_API_KEY:
             print("ОШИБКА: Не задан DEEPSEEK_API_KEY")
@@ -72,6 +35,35 @@ def analyze_screenshot():
                 ],
                 "captcha": {"detected": False}
             })
+        
+        # Улучшенный промпт для распознавания статуса удочек
+        prompt = """Ты помощник для игры в рыбалку. На скриншоте видно 3 удочки (слота).
+Тебе нужно найти КАЖДУЮ удочку и определить, что написано НАД ней.
+
+ОЧЕНЬ ВАЖНО: Надписи могут быть на РУССКОМ языке:
+- "Готово" (удочка готова к старту, нужно нажать Старт)
+- "Ожидание" (ждет поклевку)
+- "CATCH REQUIRED" (клюет, нужно ловить)
+- "Ловля..." (процесс ловли)
+
+Также определи:
+- Есть ли на экране окно с капчей? (обычно белое окно с надписью "Are you bot? CAPTCHA" или "Введите капчу")
+- Если есть капча - напиши текст капчи (только цифры)
+
+Ответь строго в формате JSON, без лишнего текста:
+{
+    "rods": [
+        {"slot": 1, "status": "готово"},
+        {"slot": 2, "status": "ожидание"},
+        {"slot": 3, "status": "ловля"}
+    ],
+    "captcha": {
+        "detected": false,
+        "text": ""
+    }
+}
+
+ВАЖНО: В поле status пиши ТОЛЬКО одно слово: "готово", "ожидание", "catch", "ловля"."""
         
         # Отправляем запрос к DeepSeek
         headers = {
@@ -102,14 +94,13 @@ def analyze_screenshot():
             "max_tokens": 300
         }
         
-        print(f"Отправляю запрос к DeepSeek для {action_needed}...")
+        print(f"Отправляю запрос к DeepSeek...")
         
         try:
             response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=30)
             
-            # Проверяем статус ответа
             if response.status_code != 200:
-                print(f"DeepSeek вернул ошибку: {response.status_code} - {response.text}")
+                print(f"DeepSeek вернул ошибку: {response.status_code}")
                 return jsonify({
                     "rods": [
                         {"slot": 1, "status": "ожидание"},
@@ -121,9 +112,8 @@ def analyze_screenshot():
             
             result = response.json()
             
-            # Проверяем, есть ли поле choices
             if 'choices' not in result:
-                print(f"Ошибка: в ответе нет поля 'choices'. Ответ: {result}")
+                print(f"Ошибка: в ответе нет поля 'choices'")
                 return jsonify({
                     "rods": [
                         {"slot": 1, "status": "ожидание"},
@@ -133,24 +123,37 @@ def analyze_screenshot():
                     "captcha": {"detected": False}
                 })
             
-            # Извлекаем ответ DeepSeek
             ai_response = result['choices'][0]['message']['content']
             print(f"DeepSeek ответил: {ai_response[:200]}...")
             
             # Парсим JSON из ответа
             try:
-                # Ищем JSON в ответе
                 json_match = re.search(r'\{.*\}', ai_response, re.DOTALL)
                 if json_match:
                     action_data = json.loads(json_match.group())
                 else:
                     action_data = json.loads(ai_response)
-                    
+                
+                # Проверяем и исправляем статусы
+                if 'rods' in action_data:
+                    for rod in action_data['rods']:
+                        status = rod.get('status', '').lower()
+                        # Приводим к нужному формату
+                        if 'готов' in status:
+                            rod['status'] = 'готово'
+                        elif 'ожидан' in status:
+                            rod['status'] = 'ожидание'
+                        elif 'catch' in status or 'requir' in status:
+                            rod['status'] = 'catch'
+                        elif 'ловл' in status:
+                            rod['status'] = 'ловля'
+                        else:
+                            rod['status'] = 'ожидание'
+                
                 return jsonify(action_data)
                 
             except Exception as e:
                 print(f"Ошибка парсинга JSON: {e}")
-                # Возвращаем заглушку
                 return jsonify({
                     "rods": [
                         {"slot": 1, "status": "ожидание"},
@@ -160,17 +163,6 @@ def analyze_screenshot():
                     "captcha": {"detected": False}
                 })
                 
-        except requests.exceptions.Timeout:
-            print("Таймаут при запросе к DeepSeek")
-            return jsonify({
-                "rods": [
-                    {"slot": 1, "status": "ожидание"},
-                    {"slot": 2, "status": "ожидание"},
-                    {"slot": 3, "status": "ожидание"}
-                ],
-                "captcha": {"detected": False}
-            })
-            
         except Exception as e:
             print(f"Ошибка при запросе к DeepSeek: {e}")
             return jsonify({
@@ -191,7 +183,7 @@ def analyze_screenshot():
                 {"slot": 3, "status": "ожидание"}
             ],
             "captcha": {"detected": False}
-        }), 200  # Возвращаем 200 с заглушкой, чтобы клиент не падал
+        })
 
 @app.route('/')
 def home():

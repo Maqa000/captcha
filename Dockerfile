@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11-slim  # Меняем 3.11-slim вместо 3.14
 
 # Устанавливаем Tesseract и русский язык
 RUN apt-get update && apt-get install -y \

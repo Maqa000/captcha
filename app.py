@@ -4,14 +4,62 @@ import base64
 import re
 from flask import Flask, request, jsonify
 import requests
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 import io
+import cv2
+import numpy as np
 
 app = Flask(__name__)
 
 # Конфигурация DeepSeek
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', '')
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+
+def preprocess_image(image_bytes):
+    """Улучшение качества изображения для лучшего распознавания"""
+    try:
+        # Открываем изображение
+        img = Image.open(io.BytesIO(image_bytes))
+        
+        # Увеличиваем контраст
+        enhancer = ImageEnhance.Contrast(img)
+        img = enhancer.enhance(2.0)
+        
+        # Увеличиваем резкость
+        enhancer = ImageEnhance.Sharpness(img)
+        img = enhancer.enhance(2.0)
+        
+        # Увеличиваем яркость для темных цифр
+        enhancer = ImageEnhance.Brightness(img)
+        img = enhancer.enhance(1.2)
+        
+        # Конвертируем в numpy array для OpenCV
+        img_np = np.array(img)
+        
+        # Конвертируем в оттенки серого
+        if len(img_np.shape) == 3:
+            gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = img_np
+        
+        # Применяем пороговую обработку для выделения цифр
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        # Инвертируем если нужно (черные цифры на белом фоне)
+        if np.mean(thresh) > 127:
+            thresh = cv2.bitwise_not(thresh)
+        
+        # Конвертируем обратно в PIL Image
+        processed_img = Image.fromarray(thresh)
+        
+        # Сохраняем в байты
+        output = io.BytesIO()
+        processed_img.save(output, format='PNG')
+        return output.getvalue()
+        
+    except Exception as e:
+        print(f"Ошибка при обработке изображения: {e}")
+        return image_bytes
 
 @app.route('/analyze', methods=['POST'])
 def analyze_screenshot():
@@ -25,7 +73,6 @@ def analyze_screenshot():
         
         # Конвертируем изображение в base64 для DeepSeek
         image_bytes = image_file.read()
-        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
         
         # Проверяем, есть ли API ключ
         if not DEEPSEEK_API_KEY:
@@ -44,15 +91,19 @@ def analyze_screenshot():
         
         # Разные промпты в зависимости от типа запроса
         if action_needed == "check_captcha_only":
+            # Обрабатываем изображение для улучшения качества
+            processed_bytes = preprocess_image(image_bytes)
+            image_base64 = base64.b64encode(processed_bytes).decode('utf-8')
+            
             # Специальный режим: ищем ТОЛЬКО цифры капчи
-            prompt = """Ты - система распознавания цифр с капчи. На изображении только цифры.
+            prompt = """Ты - система распознавания цифр с капчи. На изображении только цифры, возможно после обработки.
             
             ОЧЕНЬ ВАЖНЫЕ ПРАВИЛА:
-            1. Напиши ТОЛЬКО цифры, которые видишь
-            2. Если видишь несколько цифр - напиши их все подряд
-            3. НЕ пиши никаких пояснений, точек, запятых или пробелов
-            4. НЕ пиши "NO_DIGITS" или подобное
-            5. Если ничего не видишь - напиши пустую строку
+            1. Посмотри внимательно на изображение и напиши ТОЛЬКО цифры, которые видишь
+            2. Если видишь несколько цифр - напиши их все подряд, без пробелов
+            3. НЕ пиши никаких пояснений, точек, запятых
+            4. Если ничего не видишь или не уверен - напиши пустую строку
+            5. Цифры могут быть разного размера и цвета
             
             Примеры правильных ответов:
             - "1234"
@@ -81,7 +132,7 @@ def analyze_screenshot():
                         ]
                     }
                 ],
-                "temperature": 0.0,  # Минимум творчества для точности
+                "temperature": 0.0,
                 "max_tokens": 20
             }
             
@@ -128,6 +179,8 @@ def analyze_screenshot():
                 
         else:
             # Обычный режим: анализируем всю сцену с удочками
+            image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+            
             prompt = """Ты помощник для игры в рыбалку. На скриншоте видно 3 удочки.
 Найди каждую удочку и определи, что написано над ней.
 

@@ -36,143 +36,190 @@ def analyze_screenshot():
                 "captcha": {"detected": False}
             })
         
-        # Улучшенный промпт для распознавания статуса удочек
-        prompt = """Ты помощник для игры в рыбалку. На скриншоте видно 3 удочки (слота).
-Тебе нужно найти КАЖДУЮ удочку и определить, что написано НАД ней.
+        # Разные промпты в зависимости от типа запроса
+        if action_needed == "check_captcha_only":
+            # Специальный режим: ищем ТОЛЬКО цифры капчи
+            prompt = """На этом изображении только цифры капчи (без лишнего текста и кнопок).
+Напиши ТОЛЬКО цифры, которые видишь на изображении.
+Если цифр нет, напиши "NO_DIGITS".
 
-ОЧЕНЬ ВАЖНО: Надписи могут быть на РУССКОМ языке:
-- "Готово" (удочка готова к старту, нужно нажать Старт)
+Пример ответа: "1234" или "5678" или "NO_DIGITS"
+
+Важно: верни только цифры или NO_DIGITS, без пояснений и кавычек."""
+            
+            payload = {
+                "model": "deepseek-chat",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": prompt
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{image_base64}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                "temperature": 0.1,
+                "max_tokens": 50
+            }
+            
+            try:
+                response = requests.post(DEEPSEEK_API_URL, headers={
+                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                    "Content-Type": "application/json"
+                }, json=payload, timeout=30)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    ai_response = result['choices'][0]['message']['content'].strip()
+                    print(f"DeepSeek ответил (только цифры): {ai_response}")
+                    
+                    # Извлекаем только цифры из ответа
+                    digits = re.sub(r'[^0-9]', '', ai_response)
+                    
+                    if digits and len(digits) > 0:
+                        return jsonify({
+                            "success": True,
+                            "text": digits
+                        })
+                    else:
+                        return jsonify({
+                            "success": False,
+                            "text": ""
+                        })
+                else:
+                    print(f"Ошибка DeepSeek: {response.status_code}")
+                    return jsonify({"success": False, "text": ""}), 500
+                    
+            except Exception as e:
+                print(f"Ошибка при запросе к DeepSeek: {e}")
+                return jsonify({"success": False, "text": ""}), 500
+                
+        else:
+            # Обычный режим: анализируем всю сцену с удочками
+            prompt = """Ты помощник для игры в рыбалку. На скриншоте видно 3 удочки (слота).
+Найди каждую удочку и определи, что написано над ней.
+
+Варианты надписей:
+- "Готово" (готова к старту)
 - "Ожидание" (ждет поклевку)
 - "CATCH REQUIRED" (клюет, нужно ловить)
 - "Ловля..." (процесс ловли)
 
 Также определи:
-- Есть ли на экране окно с капчей? (обычно белое окно с надписью "Are you bot? CAPTCHA" или "Введите капчу")
+- Есть ли на экране окно с капчей? (обычно белое окно с надписью "Are you bot? CAPTCHA")
 - Если есть капча - напиши текст капчи (только цифры)
 
-Ответь строго в формате JSON, без лишнего текста:
+Ответь строго в формате JSON:
 {
     "rods": [
-        {"slot": 1, "status": "готово"},
-        {"slot": 2, "status": "ожидание"},
-        {"slot": 3, "status": "ловля"}
+        {"slot": 1, "status": "готово/ожидание/catch/ловля"},
+        {"slot": 2, "status": "..."},
+        {"slot": 3, "status": "..."}
     ],
     "captcha": {
-        "detected": false,
-        "text": ""
+        "detected": true/false,
+        "text": "цифры_с_капчи_если_есть"
     }
-}
-
-ВАЖНО: В поле status пиши ТОЛЬКО одно слово: "готово", "ожидание", "catch", "ловля"."""
-        
-        # Отправляем запрос к DeepSeek
-        headers = {
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": "deepseek-chat",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": prompt
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{image_base64}"
+}"""
+            
+            payload = {
+                "model": "deepseek-chat",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": prompt
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{image_base64}"
+                                }
                             }
-                        }
-                    ]
-                }
-            ],
-            "temperature": 0.1,
-            "max_tokens": 300
-        }
-        
-        print(f"Отправляю запрос к DeepSeek...")
-        
-        try:
-            response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=30)
-            
-            if response.status_code != 200:
-                print(f"DeepSeek вернул ошибку: {response.status_code}")
-                return jsonify({
-                    "rods": [
-                        {"slot": 1, "status": "ожидание"},
-                        {"slot": 2, "status": "ожидание"},
-                        {"slot": 3, "status": "ожидание"}
-                    ],
-                    "captcha": {"detected": False}
-                })
-            
-            result = response.json()
-            
-            if 'choices' not in result:
-                print(f"Ошибка: в ответе нет поля 'choices'")
-                return jsonify({
-                    "rods": [
-                        {"slot": 1, "status": "ожидание"},
-                        {"slot": 2, "status": "ожидание"},
-                        {"slot": 3, "status": "ожидание"}
-                    ],
-                    "captcha": {"detected": False}
-                })
-            
-            ai_response = result['choices'][0]['message']['content']
-            print(f"DeepSeek ответил: {ai_response[:200]}...")
-            
-            # Парсим JSON из ответа
-            try:
-                json_match = re.search(r'\{.*\}', ai_response, re.DOTALL)
-                if json_match:
-                    action_data = json.loads(json_match.group())
-                else:
-                    action_data = json.loads(ai_response)
-                
-                # Проверяем и исправляем статусы
-                if 'rods' in action_data:
-                    for rod in action_data['rods']:
-                        status = rod.get('status', '').lower()
-                        # Приводим к нужному формату
-                        if 'готов' in status:
-                            rod['status'] = 'готово'
-                        elif 'ожидан' in status:
-                            rod['status'] = 'ожидание'
-                        elif 'catch' in status or 'requir' in status:
-                            rod['status'] = 'catch'
-                        elif 'ловл' in status:
-                            rod['status'] = 'ловля'
-                        else:
-                            rod['status'] = 'ожидание'
-                
-                return jsonify(action_data)
-                
-            except Exception as e:
-                print(f"Ошибка парсинга JSON: {e}")
-                return jsonify({
-                    "rods": [
-                        {"slot": 1, "status": "ожидание"},
-                        {"slot": 2, "status": "ожидание"},
-                        {"slot": 3, "status": "ожидание"}
-                    ],
-                    "captcha": {"detected": False}
-                })
-                
-        except Exception as e:
-            print(f"Ошибка при запросе к DeepSeek: {e}")
-            return jsonify({
-                "rods": [
-                    {"slot": 1, "status": "ожидание"},
-                    {"slot": 2, "status": "ожидание"},
-                    {"slot": 3, "status": "ожидание"}
+                        ]
+                    }
                 ],
-                "captcha": {"detected": False}
-            })
+                "temperature": 0.1,
+                "max_tokens": 300
+            }
+            
+            try:
+                response = requests.post(DEEPSEEK_API_URL, headers={
+                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                    "Content-Type": "application/json"
+                }, json=payload, timeout=30)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    ai_response = result['choices'][0]['message']['content']
+                    print(f"DeepSeek ответил: {ai_response[:200]}...")
+                    
+                    # Парсим JSON из ответа
+                    try:
+                        json_match = re.search(r'\{.*\}', ai_response, re.DOTALL)
+                        if json_match:
+                            action_data = json.loads(json_match.group())
+                        else:
+                            action_data = json.loads(ai_response)
+                        
+                        # Проверяем и исправляем статусы
+                        if 'rods' in action_data:
+                            for rod in action_data['rods']:
+                                status = rod.get('status', '').lower()
+                                if 'готов' in status:
+                                    rod['status'] = 'готово'
+                                elif 'ожидан' in status:
+                                    rod['status'] = 'ожидание'
+                                elif 'catch' in status or 'requir' in status:
+                                    rod['status'] = 'catch'
+                                elif 'ловл' in status:
+                                    rod['status'] = 'ловля'
+                                else:
+                                    rod['status'] = 'ожидание'
+                        
+                        return jsonify(action_data)
+                        
+                    except Exception as e:
+                        print(f"Ошибка парсинга JSON: {e}")
+                        return jsonify({
+                            "rods": [
+                                {"slot": 1, "status": "ожидание"},
+                                {"slot": 2, "status": "ожидание"},
+                                {"slot": 3, "status": "ожидание"}
+                            ],
+                            "captcha": {"detected": False}
+                        })
+                else:
+                    print(f"Ошибка DeepSeek: {response.status_code}")
+                    return jsonify({
+                        "rods": [
+                            {"slot": 1, "status": "ожидание"},
+                            {"slot": 2, "status": "ожидание"},
+                            {"slot": 3, "status": "ожидание"}
+                        ],
+                        "captcha": {"detected": False}
+                    })
+                    
+            except Exception as e:
+                print(f"Ошибка при запросе к DeepSeek: {e}")
+                return jsonify({
+                    "rods": [
+                        {"slot": 1, "status": "ожидание"},
+                        {"slot": 2, "status": "ожидание"},
+                        {"slot": 3, "status": "ожидание"}
+                    ],
+                    "captcha": {"detected": False}
+                })
         
     except Exception as e:
         print(f"Общая ошибка: {str(e)}")

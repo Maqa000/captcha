@@ -30,7 +30,6 @@ def analyze_screenshot():
         # Проверяем, есть ли API ключ
         if not DEEPSEEK_API_KEY:
             print("ОШИБКА: Не задан DEEPSEEK_API_KEY")
-            # Возвращаем заглушку для обычного режима
             if action_needed == "check_captcha_only":
                 return jsonify({"success": False, "text": ""})
             else:
@@ -46,8 +45,22 @@ def analyze_screenshot():
         # Разные промпты в зависимости от типа запроса
         if action_needed == "check_captcha_only":
             # Специальный режим: ищем ТОЛЬКО цифры капчи
-            prompt = """На этом изображении только цифры капчи. Напиши ТОЛЬКО цифры, которые видишь.
-Если цифр нет, напиши "NO_DIGITS". Ответь только цифрами или NO_DIGITS."""
+            prompt = """Ты - система распознавания цифр с капчи. На изображении только цифры.
+            
+            ОЧЕНЬ ВАЖНЫЕ ПРАВИЛА:
+            1. Напиши ТОЛЬКО цифры, которые видишь
+            2. Если видишь несколько цифр - напиши их все подряд
+            3. НЕ пиши никаких пояснений, точек, запятых или пробелов
+            4. НЕ пиши "NO_DIGITS" или подобное
+            5. Если ничего не видишь - напиши пустую строку
+            
+            Примеры правильных ответов:
+            - "1234"
+            - "56789"
+            - "42"
+            - ""
+            
+            Твой ответ должен содержать ТОЛЬКО цифры или ничего."""
             
             payload = {
                 "model": "deepseek-chat",
@@ -68,8 +81,8 @@ def analyze_screenshot():
                         ]
                     }
                 ],
-                "temperature": 0.1,
-                "max_tokens": 50
+                "temperature": 0.0,  # Минимум творчества для точности
+                "max_tokens": 20
             }
             
             try:
@@ -78,26 +91,35 @@ def analyze_screenshot():
                     "Content-Type": "application/json"
                 }
                 
+                print("Отправляю запрос к DeepSeek для распознавания цифр...")
                 response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=30)
                 
                 if response.status_code == 200:
                     result = response.json()
+                    print(f"Полный ответ DeepSeek: {result}")
+                    
                     if 'choices' in result and len(result['choices']) > 0:
                         ai_response = result['choices'][0]['message']['content'].strip()
-                        print(f"DeepSeek ответил (только цифры): {ai_response}")
+                        print(f"Raw ответ DeepSeek: '{ai_response}'")
                         
-                        # Извлекаем только цифры из ответа
+                        # Извлекаем ТОЛЬКО цифры из ответа
                         digits = re.sub(r'[^0-9]', '', ai_response)
+                        print(f"Извлеченные цифры: '{digits}'")
                         
                         if digits and len(digits) > 0:
                             return jsonify({
                                 "success": True,
                                 "text": digits
                             })
-                    
-                    return jsonify({"success": False, "text": ""})
+                        else:
+                            print("Цифры не найдены в ответе")
+                            return jsonify({"success": False, "text": ""})
+                    else:
+                        print("Нет поля choices в ответе")
+                        return jsonify({"success": False, "text": ""})
                 else:
                     print(f"Ошибка DeepSeek: {response.status_code}")
+                    print(f"Текст ошибки: {response.text}")
                     return jsonify({"success": False, "text": ""})
                     
             except Exception as e:
@@ -220,14 +242,17 @@ def analyze_screenshot():
         
     except Exception as e:
         print(f"Общая ошибка: {str(e)}")
-        return jsonify({
-            "rods": [
-                {"slot": 1, "status": "ожидание"},
-                {"slot": 2, "status": "ожидание"},
-                {"slot": 3, "status": "ожидание"}
-            ],
-            "captcha": {"detected": False}
-        })
+        if action_needed == "check_captcha_only":
+            return jsonify({"success": False, "text": ""})
+        else:
+            return jsonify({
+                "rods": [
+                    {"slot": 1, "status": "ожидание"},
+                    {"slot": 2, "status": "ожидание"},
+                    {"slot": 3, "status": "ожидание"}
+                ],
+                "captcha": {"detected": False}
+            })
 
 @app.route('/')
 def home():

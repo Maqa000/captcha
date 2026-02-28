@@ -6,8 +6,6 @@ from flask import Flask, request, jsonify
 from PIL import Image, ImageEnhance, ImageOps
 import io
 import pytesseract
-import cv2
-import numpy as np
 
 app = Flask(__name__)
 
@@ -32,48 +30,16 @@ def preprocess_image(image_bytes):
         enhancer = ImageEnhance.Sharpness(img)
         img = enhancer.enhance(3.0)
         
-        # Конвертируем в numpy array для OpenCV
-        img_np = np.array(img)
+        # Конвертируем в черно-белое
+        img = img.convert('L')
         
-        # Конвертируем в оттенки серого
-        if len(img_np.shape) == 3:
-            gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-        else:
-            gray = img_np
+        # Инвертируем если нужно (черные цифры на белом фоне)
+        # img = ImageOps.invert(img)
         
-        # Применяем адаптивную пороговую обработку
-        binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                      cv2.THRESH_BINARY, 11, 2)
-        
-        # Убираем шум
-        denoised = cv2.medianBlur(binary, 3)
-        
-        # Конвертируем обратно в PIL
-        result = Image.fromarray(denoised)
-        
-        return result
+        return img
     except Exception as e:
         print(f"Ошибка обработки: {e}")
         return None
-
-def extract_digits_with_tesseract(img):
-    """Извлекает цифры с помощью Tesseract"""
-    try:
-        # Настройки Tesseract: только цифры
-        custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789'
-        
-        # Пробуем распознать
-        text = pytesseract.image_to_string(img, config=custom_config)
-        print(f"Tesseract raw: '{text}'")
-        
-        # Извлекаем только цифры
-        digits = re.sub(r'[^0-9]', '', text)
-        print(f"Извлечено цифр: '{digits}'")
-        
-        return digits
-    except Exception as e:
-        print(f"Ошибка Tesseract: {e}")
-        return ""
 
 @app.route('/analyze', methods=['POST'])
 def analyze_screenshot():
@@ -86,15 +52,22 @@ def analyze_screenshot():
         image_bytes = image_file.read()
         
         print(f"Получен запрос: {action_needed}")
-        print(f"Размер изображения: {len(image_bytes)} байт")
         
         if action_needed == "check_captcha_only":
-            # Обрабатываем изображение для Tesseract
+            # Обрабатываем изображение
             img = preprocess_image(image_bytes)
             
             if img:
-                # Распознаем цифры
-                digits = extract_digits_with_tesseract(img)
+                # Настройки Tesseract: только цифры
+                custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789'
+                
+                # Распознаем
+                text = pytesseract.image_to_string(img, config=custom_config)
+                print(f"Tesseract raw: '{text}'")
+                
+                # Извлекаем только цифры
+                digits = re.sub(r'[^0-9]', '', text)
+                print(f"Цифры: '{digits}'")
                 
                 if digits and len(digits) > 0:
                     return jsonify({
@@ -102,17 +75,14 @@ def analyze_screenshot():
                         "text": digits
                     })
                 else:
-                    # Пробуем другой метод - ищем текст "Captcha:" и цифры после него
-                    # Настройки для распознавания всего текста
+                    # Пробуем другой метод - ищем текст "Captcha:"
                     text_config = r'--oem 3 --psm 6'
                     full_text = pytesseract.image_to_string(img, config=text_config)
                     print(f"Полный текст: '{full_text}'")
                     
-                    # Ищем цифры после "Captcha:"
                     match = re.search(r'Captcha:\s*(\d+)', full_text, re.IGNORECASE)
                     if match:
                         digits = match.group(1)
-                        print(f"Найдено через regex: '{digits}'")
                         return jsonify({
                             "success": True,
                             "text": digits
@@ -121,7 +91,7 @@ def analyze_screenshot():
             return jsonify({"success": False, "text": ""})
             
         else:
-            # Для удочек возвращаем заглушку (или можно тоже использовать Tesseract)
+            # Для удочек возвращаем заглушку
             return jsonify({
                 "rods": [
                     {"slot": 1, "status": "ожидание"},
@@ -131,7 +101,7 @@ def analyze_screenshot():
             })
         
     except Exception as e:
-        print(f"Общая ошибка: {str(e)}")
+        print(f"Ошибка: {str(e)}")
         return jsonify({"success": False, "text": ""})
 
 @app.route('/')

@@ -4,10 +4,8 @@ import base64
 import re
 from flask import Flask, request, jsonify
 import requests
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance
 import io
-import cv2
-import numpy as np
 
 app = Flask(__name__)
 
@@ -16,9 +14,8 @@ DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', '')
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
 def preprocess_image(image_bytes):
-    """Улучшение качества изображения для лучшего распознавания"""
+    """Улучшение качества изображения"""
     try:
-        # Открываем изображение
         img = Image.open(io.BytesIO(image_bytes))
         
         # Увеличиваем контраст
@@ -29,52 +26,30 @@ def preprocess_image(image_bytes):
         enhancer = ImageEnhance.Sharpness(img)
         img = enhancer.enhance(2.0)
         
-        # Увеличиваем яркость для темных цифр
+        # Увеличиваем яркость
         enhancer = ImageEnhance.Brightness(img)
         img = enhancer.enhance(1.2)
         
-        # Конвертируем в numpy array для OpenCV
-        img_np = np.array(img)
+        # Конвертируем в черно-белое
+        img = img.convert('L')
         
-        # Конвертируем в оттенки серого
-        if len(img_np.shape) == 3:
-            gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-        else:
-            gray = img_np
-        
-        # Применяем пороговую обработку для выделения цифр
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        
-        # Инвертируем если нужно (черные цифры на белом фоне)
-        if np.mean(thresh) > 127:
-            thresh = cv2.bitwise_not(thresh)
-        
-        # Конвертируем обратно в PIL Image
-        processed_img = Image.fromarray(thresh)
-        
-        # Сохраняем в байты
         output = io.BytesIO()
-        processed_img.save(output, format='PNG')
+        img.save(output, format='PNG')
         return output.getvalue()
-        
     except Exception as e:
-        print(f"Ошибка при обработке изображения: {e}")
+        print(f"Ошибка обработки: {e}")
         return image_bytes
 
 @app.route('/analyze', methods=['POST'])
 def analyze_screenshot():
     try:
-        # Получаем изображение от клиента
         image_file = request.files.get('screenshot')
         if not image_file:
             return jsonify({"error": "No screenshot provided"}), 400
             
         action_needed = request.form.get('action_needed', 'check_rods')
-        
-        # Конвертируем изображение в base64 для DeepSeek
         image_bytes = image_file.read()
         
-        # Проверяем, есть ли API ключ
         if not DEEPSEEK_API_KEY:
             print("ОШИБКА: Не задан DEEPSEEK_API_KEY")
             if action_needed == "check_captcha_only":
@@ -89,29 +64,23 @@ def analyze_screenshot():
                     "captcha": {"detected": False}
                 })
         
-        # Разные промпты в зависимости от типа запроса
         if action_needed == "check_captcha_only":
-            # Обрабатываем изображение для улучшения качества
+            # Обрабатываем изображение
             processed_bytes = preprocess_image(image_bytes)
             image_base64 = base64.b64encode(processed_bytes).decode('utf-8')
             
-            # Специальный режим: ищем ТОЛЬКО цифры капчи
-            prompt = """Ты - система распознавания цифр с капчи. На изображении только цифры, возможно после обработки.
+            # Новый промпт специально для поиска цифр после "Captcha:"
+            prompt = """Ты видишь изображение с текстом. Найди строку "Captcha:" и после нее идут цифры.
             
-            ОЧЕНЬ ВАЖНЫЕ ПРАВИЛА:
-            1. Посмотри внимательно на изображение и напиши ТОЛЬКО цифры, которые видишь
-            2. Если видишь несколько цифр - напиши их все подряд, без пробелов
-            3. НЕ пиши никаких пояснений, точек, запятых
-            4. Если ничего не видишь или не уверен - напиши пустую строку
-            5. Цифры могут быть разного размера и цвета
+            ОЧЕНЬ ВАЖНО:
+            1. Найди текст "Captcha:" на изображении
+            2. После него должны быть цифры (например: 1702)
+            3. Напиши ТОЛЬКО эти цифры, ничего больше
+            4. Если цифр нет - напиши пустую строку
             
-            Примеры правильных ответов:
-            - "1234"
-            - "56789"
-            - "42"
-            - ""
+            Пример: если видишь "Captcha: 1702", ответь "1702"
             
-            Твой ответ должен содержать ТОЛЬКО цифры или ничего."""
+            Твой ответ должен содержать ТОЛЬКО цифры."""
             
             payload = {
                 "model": "deepseek-chat",
@@ -142,18 +111,18 @@ def analyze_screenshot():
                     "Content-Type": "application/json"
                 }
                 
-                print("Отправляю запрос к DeepSeek для распознавания цифр...")
+                print("Отправляю запрос к DeepSeek для поиска цифр после Captcha:")
                 response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=30)
                 
                 if response.status_code == 200:
                     result = response.json()
-                    print(f"Полный ответ DeepSeek: {result}")
+                    print(f"Ответ DeepSeek: {result}")
                     
                     if 'choices' in result and len(result['choices']) > 0:
                         ai_response = result['choices'][0]['message']['content'].strip()
-                        print(f"Raw ответ DeepSeek: '{ai_response}'")
+                        print(f"Текст ответа: '{ai_response}'")
                         
-                        # Извлекаем ТОЛЬКО цифры из ответа
+                        # Извлекаем ТОЛЬКО цифры
                         digits = re.sub(r'[^0-9]', '', ai_response)
                         print(f"Извлеченные цифры: '{digits}'")
                         
@@ -163,34 +132,31 @@ def analyze_screenshot():
                                 "text": digits
                             })
                         else:
-                            print("Цифры не найдены в ответе")
+                            print("Цифры не найдены")
                             return jsonify({"success": False, "text": ""})
                     else:
-                        print("Нет поля choices в ответе")
+                        print("Нет поля choices")
                         return jsonify({"success": False, "text": ""})
                 else:
                     print(f"Ошибка DeepSeek: {response.status_code}")
-                    print(f"Текст ошибки: {response.text}")
                     return jsonify({"success": False, "text": ""})
                     
             except Exception as e:
-                print(f"Ошибка при запросе к DeepSeek: {e}")
+                print(f"Ошибка запроса: {e}")
                 return jsonify({"success": False, "text": ""})
                 
         else:
-            # Обычный режим: анализируем всю сцену с удочками
+            # Обычный режим для удочек
             image_base64 = base64.b64encode(image_bytes).decode('utf-8')
             
             prompt = """Ты помощник для игры в рыбалку. На скриншоте видно 3 удочки.
 Найди каждую удочку и определи, что написано над ней.
 
 Варианты надписей:
-- "Готово" (зеленый текст)
-- "Ожидание" (серый текст)
-- "CATCH REQUIRED" (синий текст)
-- "Ловля..." (серый текст)
-
-Также определи, есть ли на экране окно с капчей (обычно белое окно с надписью "Are you bot?").
+- "Готово"
+- "Ожидание"
+- "CATCH REQUIRED"
+- "Ловля..."
 
 Ответь строго в формате JSON:
 {
@@ -199,13 +165,8 @@ def analyze_screenshot():
         {"slot": 2, "status": "..."},
         {"slot": 3, "status": "..."}
     ],
-    "captcha": {
-        "detected": true/false,
-        "text": "цифры_с_капчи_если_есть"
-    }
-}
-
-Важно: верни ТОЛЬКО JSON, без пояснений."""
+    "captcha": {"detected": false}
+}"""
             
             payload = {
                 "model": "deepseek-chat",
@@ -244,7 +205,6 @@ def analyze_screenshot():
                         ai_response = result['choices'][0]['message']['content']
                         print(f"DeepSeek ответил: {ai_response[:200]}...")
                         
-                        # Парсим JSON из ответа
                         try:
                             json_match = re.search(r'\{.*\}', ai_response, re.DOTALL)
                             if json_match:
@@ -252,7 +212,6 @@ def analyze_screenshot():
                             else:
                                 action_data = json.loads(ai_response)
                             
-                            # Проверяем и исправляем статусы
                             if 'rods' in action_data:
                                 for rod in action_data['rods']:
                                     status = rod.get('status', '').lower()
@@ -272,7 +231,6 @@ def analyze_screenshot():
                         except Exception as e:
                             print(f"Ошибка парсинга JSON: {e}")
                 
-                # Возвращаем заглушку в случае ошибки
                 return jsonify({
                     "rods": [
                         {"slot": 1, "status": "ожидание"},
@@ -283,7 +241,7 @@ def analyze_screenshot():
                 })
                     
             except Exception as e:
-                print(f"Ошибка при запросе к DeepSeek: {e}")
+                print(f"Ошибка при запросе: {e}")
                 return jsonify({
                     "rods": [
                         {"slot": 1, "status": "ожидание"},
@@ -309,7 +267,7 @@ def analyze_screenshot():
 
 @app.route('/')
 def home():
-    return "Fishing Bot Server is running! Используй /analyze для отправки скриншотов"
+    return "Fishing Bot Server is running!"
 
 @app.route('/ping', methods=['GET'])
 def ping():
